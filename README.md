@@ -1,2 +1,3 @@
-# centrale_latex_template
-A project for a latex template for reports with Centrale Lille information.
+# Rapport au format Latex pour Centrale Lille
+Ce projet a pour but de mettre a disposition un template pour latex pour des rapports à l'Ecole Centrale de Lille.
+
