@@ -1,0 +1,1789 @@
+\begin{sourcecode}[]{opensees}{Programa en TCL+OpenSees.}
+# --------------------------------------------------------------------------------------------------
+# Example 6. 2D RC Frame
+#		Silvia Mazzoni & Frank McKenna, 2006
+# nonlinearBeamColumn element, inelastic fiber section
+#
+
+# SET UP ----------------------------------------------------------------------------
+wipe;				# clear memory of all past model definitions
+model BasicBuilder -ndm 2 -ndf 3;	# Define the model builder, ndm=#dimension, ndf=#dofs
+set dataDir Data;			# set up name of data directory (can remove this)
+file mkdir $dataDir; 			# create data directory
+set GMdir "../GMfiles/";			# ground-motion file directory
+source LibUnits.tcl;			# define units
+source DisplayPlane.tcl;		# procedure for displaying a plane in model
+source DisplayModel2D.tcl;		# procedure for displaying 2D perspective of model
+source BuildRCrectSection.tcl;		# procedure for definining RC fiber section
+
+# define GEOMETRY -------------------------------------------------------------
+# define structure-geometry paramters
+set LCol [expr 14*$ft];		# column height
+set LBeam [expr 24*$ft];		# beam length
+set NStory 3;			# number of stories above ground level -------------- you can change this.
+set NBay 3;			# number of bays (max 9) ------------------------------you can change this.
+
+# define NODAL COORDINATES
+for {set level 1} {$level <=[expr $NStory+1]} {incr level 1} {
+	set Y [expr ($level-1)*$LCol];
+	for {set pier 1} {$pier <= [expr $NBay+1]} {incr pier 1} {
+		set X [expr ($pier-1)*$LBeam];
+		set nodeID [expr $level*10+$pier]
+		node $nodeID $X $Y;		# actually define node
+	}
+}
+
+
+# determine support nodes where ground motions are input, for multiple-support excitation
+set iSupportNode ""
+set level 1
+for {set pier 1} {$pier <= [expr $NBay+1]} {incr pier 1} {
+	set nodeID [expr $level*10+$pier]
+	lappend iSupportNode $nodeID
+}
+
+
+# BOUNDARY CONDITIONS
+fixY 0.0 1 1 0;		# pin all Y=0.0 nodes
+
+# calculated MODEL PARAMETERS, particular to this model
+puts "Number of Stories: $NStory Number of bays: $NBay"
+# Set up parameters that are particular to the model for displacement control
+set IDctrlNode [expr ($NStory+1)*10+1];		# node where displacement is read for displacement control
+set IDctrlDOF 1;		# degree of freedom of displacement read for displacement control
+set LBuilding [expr $NStory*$LCol];	# total building height
+
+# Define SECTIONS -------------------------------------------------------------
+set SectionType FiberSection;		# options: Elastic FiberSection
+
+# define section tags:
+set ColSecTag 1
+set BeamSecTag 2
+
+# Section Properties:
+set HCol [expr 24*$in];		# square-Column width
+set BCol $HCol
+set HBeam [expr 42*$in];		# Beam depth -- perpendicular to bending axis
+set BBeam [expr 24*$in];		# Beam width -- parallel to bending axis
+
+if {$SectionType == "Elastic"} {
+	# material properties:
+	set fc 4000*$psi;			# concrete nominal compressive strength
+	set Ec [expr 57*$ksi*pow($fc/$psi,0.5)];	# concrete Young's Modulus
+	# column section properties:
+	set AgCol [expr $HCol*$BCol];		# rectuangular-Column cross-sectional area
+	set IzCol [expr 0.5*1./12*$BCol*pow($HCol,3)];	# about-local-z Rect-Column gross moment of inertial
+	# beam sections:
+	set AgBeam [expr $HBeam*$BBeam];		# rectuangular-Beam cross-sectional area
+	set IzBeam [expr 0.5*1./12*$BBeam*pow($HBeam,3)];	# about-local-z Rect-Beam cracked moment of inertial
+	
+	section Elastic $ColSecTag $Ec $AgCol $IzCol 
+	section Elastic $BeamSecTag $Ec $AgBeam $IzBeam 
+	
+} elseif {$SectionType == "FiberSection"} {
+	# MATERIAL parameters 
+	source LibMaterialsRC.tcl;	# define library of Reinforced-concrete Materials
+	
+	# FIBER SECTION properties 
+	# Column section geometry:
+	set cover [expr 2.5*$in];	# rectangular-RC-Column cover
+	set numBarsTopCol 8;		# number of longitudinal-reinforcement bars on top layer
+	set numBarsBotCol 8;		# number of longitudinal-reinforcement bars on bottom layer
+	set numBarsIntCol 6;		# TOTAL number of reinforcing bars on the intermediate layers
+	set barAreaTopCol [expr 1.*$in*$in];	# longitudinal-reinforcement bar area
+	set barAreaBotCol [expr 1.*$in*$in];	# longitudinal-reinforcement bar area
+	set barAreaIntCol [expr 1.*$in*$in];	# longitudinal-reinforcement bar area
+	
+	set numBarsTopBeam 6;		# number of longitudinal-reinforcement bars on top layer
+	set numBarsBotBeam 6;		# number of longitudinal-reinforcement bars on bottom layer
+	set numBarsIntBeam 2;		# TOTAL number of reinforcing bars on the intermediate layers
+	set barAreaTopBeam [expr 1.*$in*$in];	# longitudinal-reinforcement bar area
+	set barAreaBotBeam [expr 1.*$in*$in];	# longitudinal-reinforcement bar area
+	set barAreaIntBeam [expr 1.*$in*$in];	# longitudinal-reinforcement bar area
+	
+	set nfCoreY 20;		# number of fibers in the core patch in the y direction
+	set nfCoreZ 20;		# number of fibers in the core patch in the z direction
+	set nfCoverY 20;		# number of fibers in the cover patches with long sides in the y direction
+	set nfCoverZ 20;		# number of fibers in the cover patches with long sides in the z direction
+	# rectangular section with one layer of steel evenly distributed around the perimeter and a confined core.
+	BuildRCrectSection $ColSecTag $HCol $BCol $cover $cover $IDconcCore  $IDconcCover $IDSteel $numBarsTopCol $barAreaTopCol $numBarsBotCol $barAreaBotCol $numBarsIntCol $barAreaIntCol  $nfCoreY $nfCoreZ $nfCoverY $nfCoverZ
+	BuildRCrectSection $BeamSecTag $HBeam $BBeam $cover $cover $IDconcCore  $IDconcCover $IDSteel $numBarsTopBeam $barAreaTopBeam $numBarsBotBeam $barAreaBotBeam $numBarsIntBeam $barAreaIntBeam  $nfCoreY $nfCoreZ $nfCoverY $nfCoverZ
+	
+} else {
+	puts "No section has been defined"
+	return -1
+}
+
+
+# define ELEMENTS
+# set up geometric transformations of element
+#   separate columns and beams, in case of P-Delta analysis for columns
+set IDColTransf 1; # all columns
+set IDBeamTransf 2; # all beams
+set ColTransfType Linear ;			# options, Linear PDelta Corotational 
+geomTransf $ColTransfType $IDColTransf  ; 	# only columns can have PDelta effects (gravity effects)
+geomTransf Linear $IDBeamTransf
+
+# Define Beam-Column Elements
+set np 5;	# number of Gauss integration points for nonlinear curvature distribution-- np=2 for linear distribution ok
+# columns
+set N0col 100;	# column element numbers
+set level 0
+for {set level 1} {$level <=$NStory} {incr level 1} {
+	for {set pier 1} {$pier <= [expr $NBay+1]} {incr pier 1} {
+		set elemID [expr $N0col  + $level*10 +$pier]
+		set nodeI [expr  $level*10 + $pier]
+		set nodeJ  [expr  ($level+1)*10 + $pier]
+		element nonlinearBeamColumn $elemID $nodeI $nodeJ $np $ColSecTag $IDColTransf;		# columns
+	}
+}
+# beams
+set N0beam 200;	# beam element numbers
+set M0 0
+for {set level 2} {$level <=[expr $NStory+1]} {incr level 1} {
+	for {set bay 1} {$bay <= $NBay} {incr bay 1} {
+		set elemID [expr $N0beam + $level*10 +$bay]
+		set nodeI [expr  $M0 + $level*10 + $bay]
+		set nodeJ  [expr  $M0 + $level*10 + $bay+1]
+		element nonlinearBeamColumn $elemID $nodeI $nodeJ $np $BeamSecTag $IDBeamTransf;	# beams
+	}
+}
+
+# Define GRAVITY LOADS, weight and masses
+# calculate dead load of frame, assume this to be an internal frame (do LL in a similar manner)
+# calculate distributed weight along the beam length
+set GammaConcrete [expr 150*$pcf];   		# Reinforced-Concrete floor slabs
+set Tslab [expr 6*$in];			# 6-inch slab
+set Lslab [expr 2*$LBeam/2]; 			# assume slab extends a distance of $LBeam1/2 in/out of plane
+set Qslab [expr $GammaConcrete*$Tslab*$Lslab]; 
+set QdlCol [expr $GammaConcrete*$HCol*$BCol];	# self weight of Column, weight per length
+set QBeam [expr $GammaConcrete*$HBeam*$BBeam];	# self weight of Beam, weight per length
+set QdlBeam [expr $Qslab + $QBeam]; 	# dead load distributed along beam.
+set WeightCol [expr $QdlCol*$LCol];  		# total Column weight
+set WeightBeam [expr $QdlBeam*$LBeam]; 	# total Beam weight
+
+# assign masses to the nodes that the columns are connected to 
+# each connection takes the mass of 1/2 of each element framing into it (mass=weight/$g)
+set iFloorWeight ""
+set WeightTotal 0.0
+set sumWiHi 0.0;		# sum of storey weight times height, for lateral-load distribution
+for {set level 2} {$level <=[expr $NStory+1]} {incr level 1} { ;		
+	set FloorWeight 0.0
+	if {$level == [expr $NStory+1]}  {
+		set ColWeightFact 1;		# one column in top story
+	} else {
+		set ColWeightFact 2;		# two columns elsewhere
+	}
+	for {set pier 1} {$pier <= [expr $NBay+1]} {incr pier 1} {;
+		if {$pier == 1 || $pier == [expr $NBay+1]} {
+			set BeamWeightFact 1;	# one beam at exterior nodes
+		} else {;
+			set BeamWeightFact 2;	# two beams elewhere
+		}
+		set WeightNode [expr $ColWeightFact*$WeightCol/2 + $BeamWeightFact*$WeightBeam/2]
+		set MassNode [expr $WeightNode/$g];
+		set nodeID [expr $level*10+$pier]
+		mass $nodeID $MassNode 0.0 0.0 0.0 0.0 0.0;			# define mass
+		set FloorWeight [expr $FloorWeight+$WeightNode];
+	}
+	lappend iFloorWeight $FloorWeight
+	set WeightTotal [expr $WeightTotal+ $FloorWeight]
+	set sumWiHi [expr $sumWiHi+$FloorWeight*($level-1)*$LCol];		# sum of storey weight times height, for lateral-load distribution
+}
+set MassTotal [expr $WeightTotal/$g];						# total mass
+
+# LATERAL-LOAD distribution for static pushover analysis
+# calculate distribution of lateral load based on mass/weight distributions along building height
+# Fj = WjHj/sum(WiHi)  * Weight   at each floor j
+set iFj ""
+for {set level 2} {$level <=[expr $NStory+1]} {incr level 1} { ;	
+	set FloorWeight [lindex $iFloorWeight [expr $level-1-1]];
+	set FloorHeight [expr ($level-1)*$LCol];
+	set NodeFactor [expr $NBay+1];
+	lappend iFj [expr $FloorWeight*$FloorHeight/$sumWiHi/$NodeFactor*$WeightTotal];		# per node per floor
+}
+# create node and load vectors for lateral-load distribution in static analysis
+set iFPush ""
+set iNodePush ""
+for {set level 2} {$level <=[expr $NStory+1]} {incr level 1} {
+	set FPush [lindex $iFj [expr $level-1-1]];		# lateral load coefficient
+	for {set pier 1} {$pier <= [expr $NBay+1]} {incr pier 1} {
+		set nodeID [expr $level*10+$pier]
+		lappend iNodePush $nodeID
+		lappend iFPush $FPush
+	}
+}
+
+# Define RECORDERS -------------------------------------------------------------
+set FreeNodeID [expr ($NStory+1)*10+($NBay+1)];					# ID: free node
+set SupportNodeFirst [lindex $iSupportNode 0];						# ID: first support node
+set SupportNodeLast [lindex $iSupportNode [expr [llength $iSupportNode]-1]];			# ID: last support node
+set FirstColumn [expr $N0col+1*10+1];							# ID: first column
+recorder Node -file $dataDir/DFree.out -time -node $FreeNodeID  -dof 1 2 3 disp;				# displacements of free node
+recorder Node -file $dataDir/DBase.out -time -nodeRange $SupportNodeFirst $SupportNodeLast -dof 1 2 3 disp;	# displacements of support nodes
+
+
+# Define DISPLAY -------------------------------------------------------------
+DisplayModel2D NodeNumbers
+
+# define GRAVITY -------------------------------------------------------------
+# GRAVITY LOADS # define gravity load applied to beams and columns -- eleLoad applies loads in local coordinate axis
+pattern Plain 101 Linear {
+	for {set level 1} {$level <=$NStory} {incr level 1} {
+		for {set pier 1} {$pier <= [expr $NBay+1]} {incr pier 1} {
+			set elemID [expr $N0col  + $level*10 +$pier]
+			eleLoad -ele $elemID -type -beamUniform 0 -$QdlCol; 	# COLUMNS
+		}
+	}
+	for {set level 2} {$level <=[expr $NStory+1]} {incr level 1} {
+		for {set bay 1} {$bay <= $NBay} {incr bay 1} {
+			set elemID [expr $N0beam + $level*10 +$bay]
+			eleLoad -ele $elemID  -type -beamUniform -$QdlBeam; 	# BEAMS
+		}
+	}
+}
+# Gravity-analysis parameters -- load-controlled static analysis
+set Tol 1.0e-8;			# convergence tolerance for test
+variable constraintsTypeGravity Plain;		# default;
+if {  [info exists RigidDiaphragm] == 1} {
+	if {$RigidDiaphragm=="ON"} {
+		variable constraintsTypeGravity Lagrange;	#  large model: try Transformation
+	};	# if rigid diaphragm is on
+};	# if rigid diaphragm exists
+constraints $constraintsTypeGravity ;     		# how it handles boundary conditions
+numberer RCM;			# renumber dof's to minimize band-width (optimization), if you want to
+system BandGeneral ;		# how to store and solve the system of equations in the analysis (large model: try UmfPack)
+test NormDispIncr $Tol 6 ; 		# determine if convergence has been achieved at the end of an iteration step
+algorithm Newton;			# use Newton's solution algorithm: updates tangent stiffness at every iteration
+set NstepGravity 10;  		# apply gravity in 10 steps
+set DGravity [expr 1./$NstepGravity]; 	# first load increment;
+integrator LoadControl $DGravity;	# determine the next time step for an analysis
+analysis Static;			# define type of analysis static or transient
+analyze $NstepGravity;		# apply gravity
+
+# ------------------------------------------------- maintain constant gravity loads and reset time to zero
+loadConst -time 0.0
+
+puts "Model Built"
+\end{sourcecode}
+
+\begin{sourcecode}[]{cuda}{Un poco de cuda.}
+__global__ void foo(){
+}
+
+__global__ void addKernel(int *c, const int *a, const int *b){
+	int i = threadIdx.x;
+	c[i] = a[i] + b[i];
+}
+
+foo<<<n,m>>>();
+\end{sourcecode}
+
+\begin{sourcecode}[]{bash}{Un poco de bash.}
+# Muestra toda la información de la batería
+function battr-info {
+	wrks-scripts
+	data=$(ioreg -l -w0 |grep Capacity)
+	python2.7 battery_info.py $data
+	cd - >> config/.empty
+}
+
+function qtest-java {
+	if [ -z "${1}" ]; then
+	echo-err 'Nombre fuente no definido'
+	else
+	vim $1
+	javac -encoding ISO-8859-1 $1 $2 $3
+	blankspace=""
+	first=$1
+	first=${first/.java/$blankspace}
+	java $first
+	fi
+}
+
+PATH=$PATH:"/Library/Frameworks/Python.framework/Versions/2.7/bin:${PATH}"
+PATH=$PATH:"/Applications/Utilities/Lynxlet.app/Contents/Resources/lynx/bin"
+export PATH
+
+alias ga='git add '
+dig +short myip.opendns.com @resolver1.opendns.com
+gcc "$@" -o $first
+
+::claramente esto no funcionará::
+sudo x, call y
+rem esto es un comentario en windows
+history -c rm a, ls -d killall e mv | grep | awk python 'hola'
+vim uwu printf 'have you seen him' -z
+git doge ssh cp cd
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}[]{c}{Ejemplo en C.}
+#include <stdio.h>
+int main(){
+	int i, j, rows;
+	
+	printf("Enter number of rows: ");
+	scanf("%d",&rows);
+	
+	for(i=1; i<=rows; ++i){
+		for(j=1; j<=i; ++j){
+			printf("* ");
+		}
+		printf("\n");
+	}
+	return 0;
+}
+\end{sourcecode}
+
+\begin{sourcecode}[]{csharp}{Ejemplo en C\#.}
+/*
+* C# Program to Get a Number and Display the Sum of the Digits 
+*/
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+
+namespace Program
+{
+	class Program
+	{
+		static void Main(string[] args)
+		{
+			int num, sum = 0, r;
+			Console.WriteLine("Enter a Number : ");
+			num = int.Parse(Console.ReadLine());
+			while (num != 0)
+			{
+				r = num % 10;
+				num = num / 10;
+				sum = sum + r;
+			}
+			Console.WriteLine("Sum of Digits of the Number : "+sum);
+			Console.ReadLine();
+			
+		}
+	}
+}
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}{cpp}{Suma en C++.}
+#include <iostream>
+using namespace std;
+
+int main()
+{
+	int n, sum = 0;
+	
+	cout << "Enter a positive integer: ";
+	cin >> n;
+	
+	for (int i = 1; i <= n; ++i) {
+		sum += i;
+	}
+	
+	cout << "Sum = " << sum;
+	return 0;
+}
+\end{sourcecode}
+
+\begin{sourcecode}{docker}{Docker.}
+version: '2'
+services:
+web:
+build: .
+ports:
+- "5000:5000"
+volumes:
+- .:/code
+- logvolume01:/var/log
+links:
+- redis
+redis:
+image: redis
+volumes:
+logvolume01: {}
+\end{sourcecode}
+
+\begin{sourcecode}{plaintext}{Resultado del análiis con TEFAME.}
+TEFAME - Toolbox para Elemento Finitos y Analisis
+Matricial de Estructuras en MATLAB
+
+Propiedades de entrada modelo:
+
+Nodos: 
+Numero de nodos: 4 
+Coordenadas nodo N1: 0 0
+Coordenadas nodo N2: 800 0
+Coordenadas nodo N3: 400 400
+Coordenadas nodo N4: 400 800
+
+Elementos: 
+Numero de elementos: 6 
+Elemento E1:	Largo: 800         Area: 20        Eo: 200000    
+Elemento E2:	Largo: 565.6854    Area: 20        Eo: 200000    
+Elemento E3:	Largo: 565.6854    Area: 20        Eo: 200000    
+Elemento E4:	Largo: 894.4272    Area: 20        Eo: 200000    
+Elemento E5:	Largo: 400         Area: 20        Eo: 200000    
+Elemento E6:	Largo: 894.4272    Area: 20        Eo: 200000    
+
+Resultados del analisis:
+
+Desplazamientos nodos: 
+Desplazamientos nodo N1: 0 0
+Desplazamientos nodo N2: 0.016 0
+Desplazamientos nodo N3: 0.008 -0.013
+Desplazamientos nodo N4: 0.053 -0.016
+
+Reacciones: 
+Reacciones nodo N1: -80 -20
+Reacciones nodo N2: 0 140
+Reacciones nodo N3: 0 0
+Reacciones nodo N4: 0 0
+
+Esfuerzos Elementos: 
+Elemento E1: -78.4273       TRACCION
+Elemento E2: 23.836         COMPRESION
+Elemento E3: 23.836         COMPRESION
+Elemento E4: -41.2047       TRACCION
+Elemento E5: 33.7093        COMPRESION
+Elemento E6: 137.6807       COMPRESION
+\end{sourcecode}
+
+\begin{sourcecode}[\label{codigo-html5}]{html5}{Ejemplo en HTML5.}
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Página</title>
+</head>
+<body>
+	<style>
+		.titulo {
+			color: #ff0000;
+		}
+	</style>
+	<div class="titulo">Hola</div>
+</body>
+</html>
+\end{sourcecode}
+
+\begin{sourcecode}[\label{codigo-matlab}]{matlab}{Ejemplo en Matlab.}
+% Se crea gráfico
+f = figure(1);
+hold on;
+movegui(f, 'center');
+xlabel('td/Tn'); ylabel('FAD=Umax/Uf0');
+title('Espectro de pulso de desplazamiento');
+
+for j = 1:length(BETA)
+	fad = ones(1, NDATOS); % Arreglo para el FAD, uno para cada r
+	for i = 1:NDATOS
+		[t, u_t, ~, ~] = main(BETA(j), r(i), M, K, F0, 0);
+		fad(i) = max(abs(u_t)) / uf0;
+	end
+mx = find(fad == max(fad(:)));
+fprintf('BETA=%.2f, MAX: FAD=%.3f, TD/TN=%.3f\n', BETA(j), fad(mx), tdtn(mx));
+plot(tdtn, fad, 'DisplayName', strcat('\beta=', sprintf('%.2f', BETA(j))));
+end	
+\end{sourcecode}
+
+\begin{sourcecode}[]{xml}{Ejemplo xml.}
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema attributeFormDefault="unqualified" elementFormDefault="qualified"
+xmlns:xs="http://www.w3.org/2001/XMLSchema">
+	<xs:element name="points">
+		<xs:complexType>
+			<xs:sequence>
+				<xs:element maxOccurs="unbounded" name="point">
+					<xs:complexType>
+						<xs:attribute name="x" type="xs:unsignedShort" use="required" />
+						<xs:attribute name="y" type="xs:unsignedShort" use="required" />
+					</xs:complexType>
+				</xs:element>
+			</xs:sequence>
+		</xs:complexType>
+	</xs:element>
+</xs:schema>
+\end{sourcecode}
+
+\begin{sourcecode}[\label{codigo-python}]{python}{Ejemplo en Python.}
+import numpy as np
+
+def incmatrix(genl1, genl2):
+m = len(genl1)
+n = len(genl2)
+M = None # Comentario 1
+VT = np.zeros((n*m, 1), int) # Comentario 2
+\end{sourcecode}
+
+\begin{sourcecode}[\label{codigo-java}]{java}{Ejemplo en Java.}
+import java.io.IOException; 
+import javax.servlet.*;
+
+// Hola mundo
+public class Hola extends GenericServlet {
+	public void service(ServletRequest request, ServletResponse response)
+	throws ServletException, IOException{
+		response.setContentType("text/html");
+		PrintWriter pw = response.getWriter();
+		pw.println("Hola, mundo!");
+		pw.close();
+	}
+}
+\end{sourcecode}
+
+\begin{sourcecode}{js}{Ejemplo en Javascript.}
+$.urlParam = function (name) {
+	let results = new RegExp('[\?&]' + name + '=([^&#]*)').exec(window.location.href);
+	if (results == null) {
+		return null;
+	} else {
+		return decodeURI(results[1]) || 0;
+	}
+};
+\end{sourcecode}
+
+\begin{sourcecode}{json}{Un arreglo en JSON.}
+{"menu": {
+	"id": "file",
+	"value": "File",
+	"popup": {
+		"menuitem": [
+		{"value": "New", "onclick": "CreateNewDoc()"},
+		{"value": "Open", "onclick": "OpenDoc()"},
+		{"value": "Close", "onclick": "CloseDoc()"}
+		]
+	}
+}}
+\end{sourcecode}
+
+\begin{sourcecode}{latex}{Imágenes múltiples.}
+\begin{images}[\label{imagenmultiple}]{Ejemplo de imagen múltiple.}
+	\addimage{ejemplos/test-image}{width=6.5cm}{Ciudad}
+	\addimage{ejemplos/test-image-wrap}{width=5cm}{Apolo}
+	\addimage{ejemplos/test-image}{width=12cm}{Ciudad más grande}
+\end{images}
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}[\label{ejemplito-perl}]{perl}{Algo de perl.}
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+# first, create your message
+use Email::MIME;
+my $message = Email::MIME->create(
+  header_str => [
+    From    => 'you@example.com',
+    To      => 'friend@example.com',
+    Subject => 'Happy birthday!',
+  ],
+  attributes => {
+    encoding => 'quoted-printable',
+    charset  => 'ISO-8859-1',
+  },
+  body_str => "Happy birthday to you!\n",
+);
+
+# send the message
+use Email::Sender::Simple qw(sendmail);
+sendmail($message);
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}{php}{Ejemplo php.}
+<?php
+$target_dir = "uploads/";
+$target_file = $target_dir . basename($_FILES["fileToUpload"]["name"]);
+$uploadOk = 1;
+$imageFileType = strtolower(pathinfo($target_file,PATHINFO_EXTENSION));
+// Check if image file is a actual image or fake image
+if(isset($_POST["submit"])) {
+    $check = getimagesize($_FILES["fileToUpload"]["tmp_name"]);
+    if($check !== false) {
+        echo "File is an image - " . $check["mime"] . ".";
+        $uploadOk = 1;
+    } else {
+        echo "File is not an image.";
+        $uploadOk = 0;
+    }
+}
+?>
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}[]{ruby}{Ejemplo con ruby.}
+class DataFile < ActiveRecord::Base
+    attr_accessor :upload
+
+  def self.save_file(upload)   
+
+    file_name = upload['datafile'].original_filename  if  (upload['datafile'] !='')    
+    file = upload['datafile'].read    
+
+    file_type = file_name.split('.').last
+    new_name_file = Time.now.to_i
+    name_folder = new_name_file
+    new_file_name_with_type = "#{new_name_file}." + file_type
+
+    image_root = "#{RAILS_CAR_IMAGES}"
+
+
+    Dir.mkdir(image_root + "#{name_folder}");
+      File.open(image_root + "#{name_folder}/" + new_file_name_with_type, "wb")  do |f|  
+        f.write(file) 
+      end
+
+  end
+end
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}{sql}{Merge two tables.}
+SELECT ChargeNum, CategoryID, SUM(Hours)
+FROM KnownHours
+GROUP BY ChargeNum, CategoryID
+UNION ALL
+SELECT ChargeNum, 'Unknown' AS CategoryID, SUM(Hours)
+FROM UnknownHours
+GROUP BY ChargeNum
+\end{sourcecode}
+
+\begin{sourcecode}{scala}{Código en scala.}
+object Test {
+	def main(args: Array[String]) {
+		var a = 0;
+		// for loop execution with a range
+		for( a <- 1 to 10){
+			println( "Value of a: " + a );
+		}
+	}
+}
+\end{sourcecode}
+
+\begin{sourcecode}{kotlin}{Kotlin en acción.}
+/* Block comment */
+package hello
+import kotlin.collections.* // line comment
+
+/**
+* Doc comment here for `SomeClass`
+* @see Iterator#next()
+*/
+@Deprecated("Deprecated class")
+private class MyClass<out T : Iterable<T>>(var prop1 : Int) {
+	fun foo(nullable : String?, r : Runnable, f : () -> Int, 
+	fl : FunctionLike, dyn: dynamic) {
+		println("length\nis ${nullable?.length} \e")
+		val ints = java.util.ArrayList<Int?>(2)
+		ints[0] = 102 + f() + fl()
+		val myFun = { -> "" };
+		var ref = ints.size
+		ints.lastIndex + globalCounter
+		ints.forEach lit@ {
+			if (it == null) return@lit
+			println(it + ref)
+		}
+		dyn.dynamicCall()
+		dyn.dynamicProp = 5
+	}
+	
+	val test = """
+		hello
+		world
+		kotlin
+	"""
+	override fun hashCode(): Int {
+		return super.hashCode() * 31
+	}
+}
+fun Int?.bar() {
+	if (this != null) {
+		println(message = toString())
+	}
+	else {
+		println(this.toString())
+	}
+}
+var globalCounter : Int = 5
+get = field
+abstract class Abstract {
+}
+object Obj
+enum class E { A, B }
+interface FunctionLike {
+	operator fun invoke() = 1
+}
+\end{sourcecode}
+
+\begin{sourcecodep}{xml}{firstnumber=100, basicstyle={\fontsize{7}{10}\selectfont\ttfamily}}{}
+<?xml version="1.0" encoding="utf-8"?>
+<xs:schema attributeFormDefault="unqualified" elementFormDefault="qualified"
+   xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="points">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element maxOccurs="unbounded" name="point">
+          <xs:complexType>
+            <xs:attribute name="x" type="xs:unsignedShort" use="required" />
+            <xs:attribute name="y" type="xs:unsignedShort" use="required" />
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
+\end{sourcecodep}
+
+\begin{sourcecode}{pseudocode}{Algoritmo.}
+input: int N, int D % Comentario
+output: int // Comentario 2
+begin # key
+	LET $\gets$ 0 /* comentario 1 */
+	while N $\geq$ D /** comentario 2 */
+		N $\gets$ N - D
+		res $\gets$ res + 1      
+	end
+	return res
+end    
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}{glsl}{Noise shader.}
+#ifdef GL_ES
+precision mediump float;
+#endif
+
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_time;
+
+// 2D Random
+float random (in vec2 st) {
+	return fract(sin(dot(st.xy,
+	vec2(12.9898,78.233)))
+	* 43758.5453123);
+}
+
+// 2D Noise based on Morgan McGuire @morgan3d
+// https://www.shadertoy.com/view/4dS3Wd
+float noise (in vec2 st) {
+	vec2 i = floor(st);
+	vec2 f = fract(st);
+	
+	// Four corners in 2D of a tile
+	float a = random(i);
+	float b = random(i + vec2(1.0, 0.0));
+	float c = random(i + vec2(0.0, 1.0));
+	float d = random(i + vec2(1.0, 1.0));
+	
+	// Smooth Interpolation
+	
+	// Cubic Hermine Curve.  Same as SmoothStep()
+	vec2 u = f*f*(3.0-2.0*f);
+	// u = smoothstep(0.,1.,f);
+	
+	// Mix 4 coorners percentages
+	return mix(a, b, u.x) +
+	(c - a)* u.y * (1.0 - u.x) +
+	(d - b) * u.x * u.y;
+}
+
+void main() {
+	vec2 st = gl_FragCoord.xy/u_resolution.xy;
+	
+	// Scale the coordinate system to see
+	// some noise in action
+	vec2 pos = vec2(st*5.0);
+	
+	// Use the noise function
+	float n = noise(pos);
+	
+	gl_FragColor = vec4(vec3(n), 1.0);
+}
+\end{sourcecode}
+
+\begin{sourcecode}[]{matlab}{Ejemplo en Matlab.}
+% Se crea gráfico
+%% hola
+f = figure(1);
+hold on;
+movegui(f, 'center');
+xlabel('td/Tn'); ylabel('FAD=Umax/Uf0');
+title('Espectro de pulso de desplazamiento');
+
+for j = 1:length(BETA)
+	fad = ones(1, NDATOS); % Arreglo para el FAD, uno para cada r
+	for i = 1:NDATOS
+		[t, u_t, ~, ~] = main(BETA(j), r(i), M, K, F0, 0);
+		fad(i) = max(abs(u_t)) / uf0;
+	end
+mx = find(fad == max(fad(:)));
+fprintf('BETA=%.2f, MAX: FAD=%.3f, TD/TN=%.3f\n', BETA(j), fad(mx), tdtn(mx));
+plot(tdtn, fad, 'DisplayName', strcat('\beta=', sprintf('%.2f', BETA(j))));
+end	
+\end{sourcecode}
+
+\begin{sourcecode}{r}{Ejemplo en r.}
+#
+# Genera una correlacion de los generos con todas sus variables
+#
+corr_data_genre <- function(data, genre) {
+	num_genre <- data[data$genre == genre, -c(1:4)]
+	corr_genre <- cor(num_genre)
+	corrplot(corr_genre, type = "lower", order = "hclust", tl.col = "black", tl.srt = 30, main = toupper(genre), tl.cex = 0.7, mar=c(0,0,1,0))
+}
+
+#
+# Crea matriz de generos
+#
+create_track_genre_df <- function(df, title) {
+	# Obtiene la lista de generos ordenados
+	genre <- data.frame(genre=unique(df$genre))
+	track_ids <- unique(df$track_id)
+	df_genre <- df[, -c(2:3, 5:15)]
+	df_genre <- df_genre[order(df_genre$track_id), ]
+	track_genres <- data.frame(track_id=track_ids)
+	
+	# Crea un data frame indicando para cada tema si tiene cada genero o no
+	df_full <- data.frame(track_id=df_genre$track_id,
+	'_'=df_genre$genre==genre[1, 1],
+	'Opera'=df_genre$genre==genre[1, 1],
+	'A_Capella'=df_genre$genre==genre[2, 1],
+	'Alternative'=df_genre$genre==genre[3, 1],
+	'Blues'=df_genre$genre==genre[4, 1],
+	'Dance'=df_genre$genre==genre[5, 1],
+	'Pop'=df_genre$genre==genre[6, 1],
+	'Electronic'=df_genre$genre==genre[7, 1],
+	'RyB'=df_genre$genre==genre[8, 1],
+	'Children_Music'=df_genre$genre==genre[9, 1],
+	'Folk'=df_genre$genre==genre[10, 1],
+	'Anime'=df_genre$genre==genre[11, 1],
+	'Rap'=df_genre$genre==genre[12, 1],
+	'Classical'=df_genre$genre==genre[13, 1],
+	'Reggae'=df_genre$genre==genre[14, 1],
+	'Hip_Hop'=df_genre$genre==genre[15, 1],
+	'Comedy'=df_genre$genre==genre[16, 1],
+	'Country'=df_genre$genre==genre[17, 1],
+	'Reggaeton'=df_genre$genre==genre[18, 1],
+	'Ska'=df_genre$genre==genre[19, 1],
+	'Indie'=df_genre$genre==genre[20, 1],
+	'Rock'=df_genre$genre==genre[21, 1],
+	'Soul'=df_genre$genre==genre[22, 1],
+	'Soundtrack'=df_genre$genre==genre[23, 1],
+	'Jazz'=df_genre$genre==genre[24, 1],
+	'World'=df_genre$genre==genre[25, 1],
+	'Movie'=df_genre$genre==genre[26, 1])
+	cols <- sapply(df_full, is.logical)
+	df_full[,cols] <- lapply(df_full[,cols], as.numeric)
+	
+	# Fusiona
+	track_genres_df <- aggregate(.~track_id, df_full[,-c(2, 27)], sum)
+	
+	# Crea un grafico de correlacion
+	track_genres_df_noid <- track_genres_df[, -c(1)]
+	corr_genre <- cor(track_genres_df_noid)
+	corrplot(corr_genre, type = "lower", order = "hclust", tl.col = "black", tl.srt = 30, main = title, tl.cex = 0.7, mar=c(0,0,1,0))
+	
+	return(track_genres_df)
+}
+
+# Crea histograma con todas las variables del dataset
+create_hist_plot <- function(df, probability) {
+	select_plot <- function(data, tag){
+		hist(data,
+		col="#00AFBB",
+		border="#015f66",
+		ylab=NULL,
+		xlab=NULL,
+		prob=probability,
+		main=toupper(tag),
+		breaks=50
+		)
+	}
+	par(mfrow=c(3,4))
+	select_plot(df$popularity, "popularity")
+	select_plot(df$acousticness, "acousticness")
+	select_plot(datos_num$danceability, "danceability")
+	select_plot(datos_num$duration_ms, "duration_ms")
+	select_plot(datos_num$energy, "energy")
+	if (probability){
+		title(ylab="Probability")
+	}else{
+		title(ylab="Frequence") 
+	}
+	select_plot(datos_num$instrumentalness, "instrumentalness")
+	select_plot(datos_num$liveness, "liveness")
+	select_plot(datos_num$loudness, "loudness")
+	select_plot(datos_num$speechiness, "speechiness")
+	select_plot(datos_num$tempo, "tempo")
+	select_plot(datos_num$valence, "valence")
+}
+
+#
+# Genera un histograma de varios generos con una variable
+#
+create_hist_genre <- function(df, genres, var){
+	gi <- 0
+	colors <- c()
+	genr <- c()
+	for (g in genres) {
+		df_g <- df[df$genre == g, var] # elige el data
+		color <- rgb(runif(1), runif(1), runif(1), 0.5)
+		if (gi == 0) {
+			hist(df_g[[1]], col=color, xlab="", ylab="", main="", border=color, breaks=50)
+		} else {
+			hist(df_g[[1]], col=color, border=color, breaks=50, add=T, xlab=var)
+		}
+		colors <- c(colors, color)
+		gi <- gi + 1
+		genr <- c(genr, g)
+	}
+	title(main=toupper(var), sub="", xlab=var, ylab="Frecuency")
+	op <- par(cex = 0.75)
+	legend('topleft', genr, fill = colors, ncol=2)
+}
+
+#
+# Genera un histograma de varios generos con una variable
+#
+create_prob_genre <- function(df, genres, var, pos, ncols, fsize){
+	if (pos == "l") {
+		legp <- "topleft"
+	} else if(pos == "c") {
+		legp <- "top"
+	} else if(pos == "r") {
+		legp <- "topright"
+	} else if (pos == "bl") {
+		legp <- "bottomleft"
+	} else if(pos == "bc") {
+		legp <- "bottom"
+	} else if(pos == "br") {
+		legp <- "bottomright"
+	} else {
+		legp <- "center"
+	}
+	gi <- 0
+	tranp <- rgb(0, 0, 0, 0) # color transparente
+	colors <- c()
+	genr <- c()
+	for (g in genres) {
+		df_g <- df[df$genre == g, var] # elige el data
+		color <- rgb(runif(1), runif(1), runif(1), 1)
+		if (gi == 0) {
+			hist(df_g[[1]], col=tranp, xlab="", ylab="", main="", border=tranp, prob = TRUE, breaks=50)
+			lines(density(df_g[[1]]), col=color, xlab="", ylab="", main="", lw=2)
+		} else {
+			hist(df_g[[1]], col=tranp, border=tranp, breaks=50, prob = TRUE, add=T, xlab=var)
+			lines(density(df_g[[1]]), col=color, lw=2)
+		}
+		colors <- c(colors, color)
+		gi <- gi + 1
+		genr <- c(genr, g)
+	}
+	title(main=toupper(var), sub="", xlab=var, ylab="Density")
+	grid()
+	op <- par(cex = fsize)
+	legend(legp, genr, fill = colors, ncol=ncols)
+}
+
+# Tamaño normal
+create_prob_genre_normal <- function(df, genres, var, pos) {
+	create_prob_genre(df, genres, var, pos, 2, 0.75)
+}
+
+# Tamaño pequeño
+create_prob_genre_small <- function(df, genres, var, pos) {
+	create_prob_genre(df, genres, var, pos, 4, 0.6)
+}
+
+# Tamaño grande
+create_prob_genre_large <- function(df, genres, var, pos) {
+	create_prob_genre(df, genres, var, pos, 1, 1)
+}
+\end{sourcecode}
+
+\begin{sourcecode}{css}{Código CSS.}
+.fecha-estilo {
+	color: #819198;
+	font-size: 15px;
+	position: relative;
+	bottom: 0;
+}
+
+.btn {
+	-moz-box-shadow: 0 0 5px 0 rgba(0, 0, 0, 0.75);
+	-webkit-box-shadow: 0 0 5px 0 rgba(0, 0, 0, 0.75);
+	background-color: rgba(100, 100, 100, 0.4);
+	border-radius: 0.3rem;
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	box-shadow: 0 0 5px 0 rgba(0, 0, 0, 0.75);
+	color: rgba(255, 255, 255, 1);
+	display: inline-block;
+	margin-bottom: 1rem;
+	margin-left: 0;
+	margin-right: 0.5rem;
+	opacity: 1.0;
+	outline: none;
+	transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+}
+
+.btn:hover {
+	opacity: 1.0;
+}
+
+.btn-pro {
+	-moz-box-shadow: 0 0 5px 0 rgba(10, 10, 10, 0.75);
+	-webkit-box-shadow: 0 0 5px 0 rgba(10, 10, 10, 0.75);
+	background-color: rgba(210, 210, 210, 0.85);
+	border-radius: 0.3rem;
+	border: 1px solid rgba(255, 255, 255, 0.5);
+	box-shadow: 0 0 5px 0 rgba(10, 10, 10, 0.75);
+	color: rgba(20, 20, 20, 1);
+	display: inline-block;
+	font-weight: bolder;
+	margin-bottom: 1rem;
+	margin-left: 0;
+	margin-right: 0.5rem;
+	opacity: 0.9;
+	outline: none;
+	transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+}
+\end{sourcecode}
+
+\begin{sourcecode}{haskell}{Ejemplo en Haskell.}
+-- Type annotation (optional)
+fib :: Int -> Integer
+
+-- With self-referencing data
+fib n = fibs !! n
+where fibs = 0 : scanl (+) 1 fibs
+-- 0,1,1,2,3,5,...
+
+-- Same, coded directly
+fib n = fibs !! n
+where fibs = 0 : 1 : next fibs
+next (a : t@(b:_)) = (a+b) : next t
+
+-- Similar idea, using zipWith
+fib n = fibs !! n
+where fibs = 0 : 1 : zipWith (+) fibs (tail fibs)
+
+-- Using a generator function
+fib n = fibs (0,1) !! n
+where fibs (a,b) = a : fibs (b,a+b)
+\end{sourcecode}
+
+\begin{sourcecode}{pascal}{Ejemplo pascal.}
+PROGRAM NotasDeAlumnos;
+uses crt;
+Type
+vecalumnos = array [1..40] of string;
+var
+Nombre, Apellido: vecalumnos;
+Nota: array [1..40] of real;
+Begin
+clrscr; /*Limpia pantalla*/
+For i:= 1 to 40 do
+	begin
+		write('Ingrese Nombre: ');
+		readln(Nombre[i]);
+		write('Ingrese Apellido: ');
+		readln(Apellido[i]);
+		write('Ingrese Nota: ');
+		readln(Nota[i]);
+	end;
+For i:= 1 to 40 do
+	begin
+		write(Nombre[i], ' ',Apellido[i]);
+		if (Nota[i] >=7) then
+			writeln(' aprobó')
+		else
+			writeln(' no aprobó');
+	end;
+writeln('');
+Write ('Pulse [Intro] para finalizar...');
+Readln
+end.
+\end{sourcecode}
+
+\begin{sourcecode}{fortran}{Ejemplo en Fortran.}
+REGRESION LINEAL.FORTRANS
+APLICACION
+     DIMENSION TIEMPO(1000),PROD(1000)
+        OPEN(1,FILE='HISTORIA.txt')
+        I=0
+ 10     READ(1,*,END=80)T,P
+        I=I+1
+        TIEMPO(.l.)=T
+        PROD(I)=P
+        GO TO 10
+ 80     NDATOS=I
+        CALL AJULIN(TIEMPO,PROD,NDATOS,A,B)
+        WRITE(*,90)A,B
+ 90     FORMAT('LA ECUACION ES:Y=',F10.2,'+',F10.2,'X')
+ 20     FORMAT(20F10.0)
+        END
+
+
+        SUBROUTINE AJULIN(X,Y,N,A,B)
+         DIMENSION X(1),Y(1)
+          SUMX=0.
+          SUMY=0.
+          SUMX2=0.
+          SUMY2=0
+          SUMXY=0
+        DO 20 I=1,N
+         SUMX=SUMX+X(.l.)
+         SUMY=SUMY+Y(.l.)
+         SUMX2=SUMX2+(X(I)*X(.l.))
+         SUMY2=SUMY2+Y(I)**2
+         SUMXY=SUMXY+(X(I)*Y(I))
+ 20    CONTINUE
+        PROD=SUMX*SUMY
+        B=(SUMXY-PROD/N)/(SUMX2-SUMX**2/N)
+        A=(SUMY/N-B*SUMX/N)
+       RETURN
+       END
+\end{sourcecode}
+
+\begin{sourcecode}{octave}{Ejemplo en Octave.}
+function out = invar_table(n,m,N)
+if n>m, error('first number must be smaller than the second'), endif
+
+t = cputime;
+out = zeros(m-n+1,2);
+
+for i=n:m
+  out(i+1-n,1) = i;
+  out(i+1-n,2) = invar(braidmatrix(i),N);
+end
+
+printf('Total CPU time: %f seconds\n', cputime-t);
+end
+\end{sourcecode}
+
+\newpage
+\begin{sourcecode}{vbscript}{Ejemplo en Visual Basic.}
+Option Explicit
+
+Sub Signal(strSignalfolge As String, Optional lngTakt As Long = 100)
+'Prozedur erzeugt eine Serie von Warntönen.
+'Die optionale Variable lngTakt gibt den Takt in Millisekunden vor (Standard: 100 ms)
+'Das Muster kann über die String-Variable strSignalfolge beeinflusst werden:
+' Stern (*)     -> 1 Warnton
+' Ziffern 1..9  -> 1..9 Takte Pause
+' Leerzeichen   -> 1 Sekunde Pause
+' Minus (-)     -> 1.5 Sekunden Pause
+    Dim i As Integer
+    Dim b As String
+    For i = 1 To Len(strSignalfolge)
+        b = Mid(strSignalfolge, i, 1)
+        Select Case b
+            Case "*": beep
+            Case 1 To 9: DELAY CInt(b) * lngTakt
+            Case " ": DELAY 1000
+            Case "-": DELAY 1500
+        End Select
+        DELAY lngTakt
+    Next i
+
+End Sub
+
+Public Function strParse(Data As String, Trenn As String, Nr As Integer)
+'Funktion trennt die Zeichenkette <Data>
+    On Error Resume Next
+    Dim MainData() As String, SplitData() As String
+    MainData = Split(Data, Trenn)
+    SplitData = Split(MainData(Nr - 1), Trenn)
+    strParse = SplitData(0)
+End Function
+\end{sourcecode}
+
+\begin{sourcecode}{lisp}{Ejemplo en Lisp.}
+(defun find-symbol-between-sigma-sets (sigma-a sigma-b scan-node symbols g)
+	(let* ((scan-node-set-in-sigma-a (find-scan-node sigma-a scan-node))
+		   (next-scan-node-set-in-sigma-b 
+			(get-next-node-set-from-scan-node-set 
+			 scan-node-set-in-sigma-a sigma-b g))
+		   (union-node-set-in-sigma-a 
+			(get-previous-nodes next-scan-node-set-in-sigma-b g)))
+	  (if 
+	   (and 
+		(memberp union-node-set-in-sigma-a scan-node-set-in-sigma-a)
+		(path-exists-between-set-a-and-set-b 
+		 union-node-set-in-sigma-a next-scan-node-set-in-sigma-b g))
+	   (car 
+		(unique-get-symbols 
+		 union-node-set-in-sigma-a next-scan-node-set-in-sigma-b symbols))
+	   nil)))
+\end{sourcecode}
+
+\begin{sourcecode}{scheme}{Ejemplo en Scheme.}
+;;; If the next character on p is a letter, get-word reads a word
+;;; from p and returns it in a string.  If the character is not a
+;;; letter, get-word returns the character (on eof, the eof-object).
+(define get-word
+	(lambda (p)
+	(let ((c (read-char p)))
+		(if (eq? (char-type c) 'letter)
+			(list->string
+			(let loop ((c c))
+				(cons c
+				(if (memq (char-type (peek-char p)) '(letter digit))
+					(loop (read-char p))
+					'()))))
+			c))))
+
+;;; char-type tests for the eof-object first, since the eof-object
+;;; may not be a valid argument to char-alphabetic? or char-numeric?
+;;; It returns the eof-object, the symbol letter, the symbol digit,
+;;; or the argument itself if it is not a letter or digit.
+(define char-type
+	(lambda (c)
+	(cond
+		((eof-object? c) c)
+		((char-alphabetic? c) 'letter)
+		((char-numeric? c) 'digit)
+		(else c))))
+
+;;; Trees are represented as vectors with four fields: word, left,
+;;; right, and count.  Only one field, word, is initialized by an
+;;; argument to the constructor procedure make-tree.  The remaining
+;;; fields are explicitly initialized and changed by subsequent
+;;; operations.  Most Scheme systems provide structure definition
+;;; facilities that automate creation of structure manipulation
+;;; procedures, but we simply define the procedures by hand here.
+(define make-tree
+	(lambda (word)
+	(vector word '() '() 1)))
+
+(define tree-word (lambda (tree) (vector-ref tree 0)))
+
+(define tree-left (lambda (tree) (vector-ref tree 1)))
+(define set-tree-left!
+	(lambda (tree new-left)
+	(vector-set! tree 1 new-left)))
+
+(define tree-right (lambda (tree) (vector-ref tree 2)))
+(define set-tree-right!
+	(lambda (tree new-right)
+	(vector-set! tree 2 new-right)))
+
+(define tree-count (lambda (tree) (vector-ref tree 3)))
+(define set-tree-count!
+	(lambda (tree new-count)
+	(vector-set! tree 3 new-count)))
+
+;;; If the word already exists in the tree, tree increments its
+;;; count.  Otherwise, a new tree node is created and put into the
+;;; tree.  In any case, the new or modified tree is returned.
+(define tree
+	(lambda (node word)
+	(cond
+		((null? node) (make-tree word))
+		((string=? word (tree-word node))
+		(set-tree-count! node (+ (tree-count node) 1))
+		node)
+		((string<? word (tree-word node))
+		(set-tree-left! node (tree (tree-left node) word))
+		node)
+		(else
+		(set-tree-right! node (tree (tree-right node) word))
+		node))))
+
+;;; tree-print prints the tree in "in-order," i.e., left subtree,
+;;; then node, then right subtree.  For each word, the count and the
+;;; word are printed on a single line.
+(define tree-print
+	(lambda (node p)
+	(if (not (null? node))
+		(begin
+			(tree-print (tree-left node) p)
+			(write (tree-count node) p)
+			(write-char #\space p)
+			(display (tree-word node) p)
+			(newline p)
+			(tree-print (tree-right node) p)))))
+
+;;; frequency is the driver routine.  It opens the files, reads the
+;;; words, and enters them into the tree.  When the input port
+;;; reaches end-of-file, it prints the tree and closes the ports.
+(define frequency
+	(lambda (infn outfn)
+	(let ((ip (open-input-file infn))
+			(op (open-output-file outfn)))
+		(let loop ((root '()))
+		(let ((w (get-word ip)))
+			(cond
+				((eof-object? w) (tree-print root op))
+				((string? w) (loop (tree root w)))
+				(else (loop root)))))
+		(close-input-port ip)
+		(close-output-port op))))
+\end{sourcecode}
+
+\begin{sourcecode}{maple}{Ejemplo en Maple.}
+restart:
+with(geom3d):
+eqS:=Equation(sphere(S,(x-1)^2 + (y-1)^2 +(z-1)^2 -121=0,[x,y,z],'centername'=T)):
+L:=[]:
+for x from -5 to 10  do
+for y from -5 to 10  do
+for z from -5 to 10  do  if  x<>xcoord(T) and y<>ycoord(T) and z <> zcoord(T) and   type(x,integer) and type(y,integer)and type(z,integer) and eqS then
+L:=[op(L), [x,y,z]] fi;
+od: od: od: 
+nops(L);  
+L;
+\end{sourcecode}
+
+\begin{sourcecode}{matlab}{Matlab 2.}
+	function [f, psd, fft, fftcomp, envFormaModal, tlocMean, tlocStd, locMean, ...
+    locStd, locFreq, maxlocs, pks, betaNodo, betaFreqNodo, fftmean, fftstd, ...
+    psdmean, psdstd] = PSD(a, fs, gdl, varargin)
+% PSD: Power Spectral Density. Calcula la FFT de un registro sismico
+% analizado para varios nodos con distintos grados de libertad. La funcion
+% permite calcular distintos tipos de periodos naturales, arrojando un
+% vector. Adicionalmente se calcula una razon de amortiguamiento con cada
+% modo.
+%
+% Input:
+%   a               Registro de aceleracion
+%   fs              Factor de muestreo del registro
+%   gdl             Vector con los grados de libertad de los nodos en el analisis
+%
+% Parametros opcionales:
+%   betaFFT         Realiza el calculo del amortiguamiento con FFT o PSD
+%   betaFFTMax      El amortiguamiento se calcula con el maximo FFT de todos los nodos
+%   peakFFT         Realiza el calculo de peaks con FFT o PSD
+%   peakMinDistance Distancia minima entre peaks requerida
+%   tukeywinr       Factor de la ventana de tukey
+%   zerofill        Indica relleno de ceros para FFT
+%
+% Output:
+%   f               Vector de frecuencias
+%   psd             Cell PSD de cada registro de los nodos
+%   fft             Cell FFT de cada registro de los nodos
+%   fftcomp         Registro completo (Re+Im)
+%   envFormaModal   Cell con formas modales para cada periodo
+%   tlocMean        Periodos medios de cada modo obtenidos de los peaks
+%   tlocStd         Desviacion estandar de cada modo obtenido de los peaks
+%   locMean         Frecuencia media de cada modo obtenido en los peaks
+%   locStd          Desviacion estandar de la frecuencia de cada modo
+%   locFreq         Posicion en el vector de frecuencias de cada modo
+%   maxlocs         Numero de modos encontrados en los peaks
+%   pks             Vector de peaks
+%   betaNodo        Vector de amortiguamientos por cada modo
+%   betaFreqNodo    Valor del FFT objetivo por cada amortiguamiento modal
+%   fftmean         Promedios FFT
+%   fftstd          Desviacion estandar FFT
+%   psdmean         Promedios PSD
+%   psdstd          Desviacion estandar PSD
+
+%% Parametros opcionales
+p = inputParser;
+p.KeepUnmatched = true;
+addOptional(p, 'betaFFT', true);
+addOptional(p, 'betaFFTMax', false); % Calcula el amortiguamiento con el maximo
+addOptional(p, 'peakFFT', true);
+addOptional(p, 'peakMinDistance', 0.5); % Requerido para el calculo
+addOptional(p, 'tmax', -1);
+addOptional(p, 'tmin', 0);
+addOptional(p, 'tukeywinr', 0.01);
+addOptional(p, 'zerofill', 0);
+parse(p, varargin{:});
+r = p.Results;
+
+if r.betaFFT
+    fprintf('\tSe calculan amortiguamientos con FFT\n');
+else
+    fprintf('\tSe calculan amortiguamientos con PSD\n');
+end
+if r.peakFFT
+    fprintf('\tSe calculan peaks periodos con FFT\n');
+else
+    fprintf('\tSe calculan peaks periodos con PSD\n');
+end
+
+% Numero de grados de libertad
+ng = length(gdl);
+
+% Se obtiene la ventana de tiempo
+c1 = 1;
+if r.tmin ~= 0
+    if r.tmin < 0
+        error('El tiempo inferior no puede ser cero');
+    end
+    c1 = fix(r.tmin*fs);
+end
+cend = false;
+if r.tmax ~= -1
+    if r.tmin >= r.tmax
+        error('El tiempo inferior tmin no puede ser mayor a tmax');
+    end
+    c2 = fix(r.tmax*fs);
+else
+    c2 = -1;
+    cend = true;
+end
+
+%% Calcula la FFT
+fft = cell(1, ng);
+psd = cell(1, ng);
+for k = 1:ng
+    
+    % Obtiene la aceleracion del grado de libertad analizado
+    acc = a(gdl(k), :);
+    
+    % Limita la ventana
+    if cend
+        c2 = length(acc);
+    end
+    if c1 > length(acc)
+        error('El tiempo inferior excede el largo del vector de aceleracion');
+    end
+    if c2 > length(acc)
+        error('El tiempo superior excede el largo del vector de aceleracion');
+    end
+    acc = acc(c1:c2);
+    
+    % Rellena con ceros
+    acc = [acc, zeros(1, floor(r.zerofill*length(acc)))]; %#ok<AGROW>
+    tuck = tukeywin(length(acc), r.tukeywinr)';
+    acctuck = acc .* tuck;
+    [f, fftt, ~] = DFT(fs, acctuck);
+    
+    % Solo conservo la mitad
+    tf = find(f == 0);
+    f = f(tf:end);
+    fftt = fftt(tf:end);
+    fftcomp{k} = fftt; %#ok<AGROW> % Guarda el registro complejo
+    fftt = abs(fftt); % O si no plot reclama
+    fft{k} = fftt; % Guarda el registro
+    
+    % Calcula el PSD
+    psd{k} = fftt.^2 / 2;
+    
+end % for k
+
+%% Calcula el promedio y la desviacion estandar de los fft
+fftmean = zeros(1, length(f));
+fftstd = zeros(1, length(f));
+fftdata = zeros(1, ng);
+fftmax = zeros(1, ng);
+for i = 1:length(f)
+    for j = 1:ng % Recorre cada grado de libertad
+        fftdata(j) = fft{j}(i);
+    end % for j
+    fftmean(i) = mean(fftdata);
+    fftstd(i) = std(fftdata);
+    fftmax(i) = max(fftdata);
+end % for i
+
+%% Calcula el promedio y la desviacion estandar de los psd
+psdmean = zeros(1, length(f));
+psdstd = zeros(1, length(f));
+psddata = zeros(1, ng);
+psdmax = zeros(1, ng);
+for i = 1:length(f)
+    for j = 1:ng % Recorre cada grado de libertad
+        psddata(j) = psd{j}(i);
+    end % for j
+    psdmean(i) = mean(psddata);
+    psdstd(i) = std(psddata);
+    psdmax(i) = max(psddata);
+end % for i
+
+%% Calcula los peaks
+locs = cell(1, ng);
+maxlocs = 0;
+for i = 1:ng
+    if r.peakFFT
+        [~, ploc] = findpeaks(fft{i}, f, ...
+            'MinPeakDistance', r.peakMinDistance);
+    else
+        [~, ploc] = findpeaks(psd{i}, f, ...
+            'MinPeakDistance', r.peakMinDistance);
+    end
+    % [maxtab, mintab] = peakdet(fft{i}, r.peakMinDistance, f);
+    locs{i} = ploc;
+    maxlocs = max(length(ploc), maxlocs);
+end % for i
+
+%% Calcula el promedio y la desviacion estandar de las frecuencias
+locMean = zeros(1, maxlocs);
+locStd = zeros(1, maxlocs);
+locFreq = zeros(1, maxlocs); % Frecuencias (posicion)
+
+% Calcula datos pero en periodos
+tlocMean = zeros(1, maxlocs);
+tlocStd = zeros(1, maxlocs);
+for i = 1:maxlocs
+    locData = []; % Datos para la posicion i
+    tlocData = [];
+    for k = 1:ng % Recorre cada nodo de analisis
+        if i <= length(locs{k})
+            locData = [locData, locs{k}(i)]; %#ok<AGROW>
+            tlocData = [tlocData, 1 / locs{k}(i)]; %#ok<AGROW>
+        end
+    end % for k
+    
+    locMean(i) = mean(locData);
+    locStd(i) = std(locData);
+    
+    % Estadistica para los periodos
+    tlocMean(i) = mean(tlocData);
+    tlocStd(i) = std(tlocData);
+end % for i
+
+%% Busca las posiciones de la frecuencia para locMean
+j = 1; % Indice a locMean
+for i = 1:length(f)
+    if f(i) >= locMean(j)
+        locFreq(j) = i;
+        j = j + 1; % Avanza
+        if j > maxlocs
+            break;
+        end
+    end
+end % for i
+
+% Peaks periodos
+if r.peakFFT
+    pks = fftmax(locFreq);
+else
+    pks = psdmax(locFreq);
+end
+
+%% Calcula los amortiguamientos por cada periodo de cada nodo registrado
+if r.betaFFT
+    pksBeta = fftmax(locFreq);
+else
+    pksBeta = psdmax(locFreq);
+end
+
+betaNodo = cell(1, ng);
+betaFreqNodo = cell(1, ng);
+
+% Recorre cada registro
+for k = 1:ng
+    
+    if ~r.betaFFTMax % Si se usan todos los registros
+        if r.betaFFT
+            ftNodo = fft{k};
+        else
+            ftNodo = psd{k};
+        end
+        pksNodo = ftNodo(locFreq);
+        pksObj = pksNodo ./ sqrt(2);
+    else % Si se usa solo el maximo
+        if r.betaFFT
+            ftNodo = fftmax;
+        else
+            ftNodo = psdmax;
+        end
+        pksObj = pksBeta ./ sqrt(2);
+    end
+    beta = zeros(1, maxlocs);
+    betaFreq = cell(1, maxlocs);
+    lastj = 1;
+    
+    % Recorre cada peak del nodo registrado
+    for i = 1:length(pks)
+        for j = lastj:length(f) - 1 % Al comenzar desde el punto anterior asegura que no se repitan frecuencias
+            if (ftNodo(j) - pksObj(i)) * (ftNodo(j+1) - pksObj(i)) < 0 % Cruzo el objetivo en i              
+                % Si el ultimo que cruzo fue superior a la frecuencia del peak
+                % objetivo entonces este corresponde a la frecuencia derecha, y
+                % el anterior a la izquierda
+                if j > locFreq(i)
+                    izq = f(lastj);
+                    der = f(j);
+                    lastj = j;
+                    if r.betaFFT
+                        beta(i) = (der - izq) / (der + izq);
+                    else
+                        beta(i) = (der^2 - izq^2) / (der^2 + izq^2);
+                    end
+                    betaFreq{i} = [izq, der, f(locFreq(i)), pksObj(i)];
+                    break;
+                end
+                lastj = j + 1; % Ultimo en atravesar
+            end
+        end % for j
+    end % for i
+    
+    % Guarda el resultado
+    betaNodo{k} = beta;
+    betaFreqNodo{k} = betaFreq;
+    
+    % Termina la ejecucion (k==1)
+    if r.betaFFTMax
+        betaNodo = betaNodo{1};
+        betaFreqNodo = betaFreqNodo{1};
+        break;
+    end
+    
+end % for k
+
+%% Calcula la envolvente de los peaks por cada una de las formas modales, usa FFT
+envFormaModal = cell(1, maxlocs);
+for k = 1:maxlocs
+    envModo = zeros(1, ng);
+    for i = 1:ng % Recorre cada nodo
+        % Obtiene la fft asociada al periodo k del registro i
+        envModo(i) = fft{i}(locFreq(k));
+    end % for i
+    envModo = envModo ./ max(envModo);
+    envFormaModal{k} = envModo;
+end % for k
+
+end % PSD function
+\end{sourcecode}
+
+\begin{sourcecode}{verilog}{Ejemplo en Verilog.}
+module Mixing {
+	///////// ADC /////////
+	inout              ADC_CS_N,
+	output             ADC_DIN,
+	input              ADC_DOUT,
+	output             ADC_SCLK,
+	
+	///////// ADC /////////
+	input              AUD_ADCDAT,
+	inout              AUD_ADCLRCK,
+	inout              AUD_BCLK,
+	output             AUD_DACDAT,
+	inout              AUD_DACLRCK,
+	output             AUD_XCK,
+	
+	///////// clocks /////////
+	input              clock2_50,
+	input              clock3_50,
+	input              clock4_50,
+	input              clock_50,
+	
+	///////// HEX /////////
+	output      [6:0]  HEX0,
+	output      [6:0]  HEX1,
+	output      [6:0]  HEX2,
+	output      [6:0]  HEX3,
+	output      [6:0]  HEX4,
+	output      [6:0]  HEX5,
+	
+	///////// FOO /////////
+	output      [2]    FOO,
+}
+\end{sourcecode}
+
+\begin{sourcecode}{vhdl}{Ejemplo en VHDL.}
+-- (this is a VHDL comment)
+
+-- import std_logic from the IEEE library
+library IEEE;
+use IEEE.std_logic_1164.all;
+
+-- this is the entity
+entity ANDGATE is
+	port (
+		I1 : in std_logic;
+		I2 : in std_logic;
+		O  : out std_logic);
+end entity ANDGATE;
+
+-- this is the architecture
+architecture RTL of ANDGATE is
+begin
+	O <= I1 and I2;
+end architecture RTL;
+\end{sourcecode}
+
+\begin{sourcecode}{assemblerx64}{Assembler x64.}
+cdqe 1, r8
+push 1
+add rsp, 4
+push 1
+\end{sourcecode}
+
+\begin{sourcecode}{assemblerx86}{Assembler x86.}
+; ---------------------------------------------
+; Programa que imprime un string en la pantalla
+; ---------------------------------------------
+	.model small              ; modelo de memoria
+
+	.stack                    ; segmento del stack
+
+	.data                     ; segmento de datos
+	Cadena1 DB 'Hola Mundo.$' ; string a imprimir (finalizado en $)
+
+	.code                     ; segmento del código
+
+; ---------------------------------------------
+; Inicio del programa
+; ---------------------------------------------
+	programa:
+		; ------------------------------------
+		; inicia el segmento de datos
+		; ------------------------------------
+		MOV AX, @data          ; carga en AX la dirección del segmento de datos
+		MOV DS, AX             ; mueve la dirección al registro de segmento por medio de AX
+		
+		; ------------------------------------
+		; Imprime un string en pantalla
+		; ------------------------------------
+		MOV DX, offset Cadena1 ; mueve a DX la dirección del string a imprimir
+		MOV AH, 9              ; AH = código para indicar al MS DOS que imprima en la pantalla, el string en DS:DX
+		INT 21h                ; llamada al MS DOS para ejecutar la función (en este caso especificada en AH)
+		
+		; ------------------------------------
+		; Finaliza el programa
+		; ------------------------------------
+		INT 20h                ; llamada al MS DOS para finalizar el programa
+
+	end programa
+\end{sourcecode}
+
+\begin{sourcecode}{lua}{Ejemplo en Lua.}
+-- defines a factorial function
+function fact (n)
+	if n == 0 then
+		return 1
+	else
+		return n * fact(n-1)
+	end
+end
+
+print("enter a number:")
+a = io.read("*number")        -- read a number
+print(fact(a))
+\end{sourcecode}
+
+\begin{sourcecode}{ini}{Configuración de los anchors.}
+[anchor_parameters]
+# Sizes should correlate to how the network processes an image.
+sizes   = 32 64 128 256 512
+# Strides should correlate to how the network strides over an image.
+strides = 8 16 32 64 128
+# The different ratios to use per anchor location.
+ratios  = 0.5 1 2 3
+# The different scaling factors to use per anchor location.
+scales  = 1 1.2 1.6
+\end{sourcecode}
+
+\begin{sourcecode}{csv}{Archivo en csv.}
+orand-car-with-bbs/training/images/0001_5179655_46066.jpg,83,8,126,61,4
+orand-car-with-bbs/training/images/0001_5179655_46066.jpg,143,11,182,61,6
+orand-car-with-bbs/training/images/0001_5179655_46066.jpg,204,11,247,54,0
+orand-car-with-bbs/training/images/0001_5179655_46066.jpg,264,15,307,58,6
+orand-car-with-bbs/training/images/0001_5179655_46066.jpg,329,11,365,62,6
+orand-car-with-bbs/training/images/0002_5179657_53862.jpg,80,11,114,56,5
+orand-car-with-bbs/training/images/0002_5179657_53862.jpg,116,13,150,62,3
+orand-car-with-bbs/training/images/0002_5179657_53862.jpg,166,15,205,68,8
+\end{sourcecode}
+
+% \newpage
+% \importsourcecode{latex}{test/general.tex}{Carga código fuente archivo LaTeX.}
+% \importsourcecode{latex}{lib/etc/example.tex}{Carga código fuente ejemplo LaTeX.}
+% \importsourcecode{latex}{lib/cfg/init.tex}{Carga código fuente init LaTeX.}
